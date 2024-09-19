@@ -19,7 +19,6 @@ def send_prompt(model_name, prompt):
         "model": model_name,
         "prompt": prompt,
         "stream": False,
-        "keep_alive": 0  # Unload the model immediately after the response
     }
     try:
         # Set timeout to 120 seconds (2 minutes)
@@ -29,7 +28,7 @@ def send_prompt(model_name, prompt):
         if response.status_code != 200:
             print(f"Error: {response.status_code}, {response.text}")
             return None, None
-
+ 
         eval_count = response_json.get("eval_count", 0)
         eval_duration = response_json.get("eval_duration", 0)
         model_output = response_json.get("response", "")
@@ -61,31 +60,46 @@ def get_model_memory_usage(model_name):
     for model in running_models:
         if model['name'] == model_name:
             # Return memory usage in bytes (either from 'size' or 'size_vram')
-            return model.get('size', 0) or model.get('size_vram', 0)
-    return 0
+            # Return memory usage in bytes
+            size = model.get('size', 0)
+            size_vram = model.get('size_vram', 0)
+            return size, size_vram
+    return 0, 0
+
+def format_bytes(size):
+    # 2**10 = 1024
+    power = 2**10
+    n = 0
+    power_labels = {0: 'Bytes', 1: 'KB', 2: 'MB', 3: 'GB', 4: 'TB'}
+    while size >= power and n < 4:
+        size /= power
+        n += 1
+    return f"{size:.2f} {power_labels[n]}"
 
 def rate_local_llm_output_with_chatgpt(local_model_output, prompt):
     """Ask OpenAI's ChatGPT to rate the local LLM's output."""
     chatgpt_prompt = f"""
-You are a code reviewer. Please rate the following response from a local LLM model based on how accurately and effectively it answers the given coding-related prompt.
+You are a code reviewer. 
+Please rate the following response from a local LLM model based on how accurately and effectively it answers the given coding-related prompt.
+Please be critical.
 
 Prompt: {prompt}
 
 Local LLM's Response: {local_model_output}
 
 Provide a score from 0 to 100 (0 being nonsense and 100 being perfect).
+Please respond only with the score.
 """
 
     try:
-        response = openai.ChatCompletion.create(
+        response = openai.chat.completions.create(
             model="gpt-4o-mini",  # Adjust to any model you prefer
             messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": chatgpt_prompt}
             ]
         )
-        rating = response['choices'][0]['message']['content']
-        return rating.strip()
+        rating = response.choices[0].message.content.strip()
+        return rating
     except Exception as e:
         print(f"Failed to get a rating from ChatGPT: {e}")
         return "No rating"
@@ -104,34 +118,77 @@ def pull_model(model_name):
     payload = {
         "name": model_name
     }
-    response = requests.post("http://localhost:11434/api/pull", json=payload, stream=True)
-    if response.status_code == 200:
-        print(f"Successfully started pulling model {model_name}")
-        # Process streaming response
-        for line in response.iter_lines():
-            if line:
-                status_update = line.decode('utf-8')
-                print(status_update)
+    response = requests.post("http://localhost:11434/api/pull", json=payload, stream=False)
+    # Decode response content and check if it contains the success status
+    if b'"status":"success"' in response.content:
+        print(f"Model {model_name} pulled successfully.")
     else:
+        print(f"Failed to pull model {model_name}: {response.content}")
+    
+    # Check if the response status code is not 200
+    if response.status_code != 200:
         print(f"Failed to pull model {model_name}: {response.text}")
 
 def ensure_models_downloaded(models):
     local_models = get_local_models()
     for model in models:
         if model not in local_models:
-            print(f"Model {model} not found locally. Pulling...")
+            print("Pulling model: " + model)
             pull_model(model)
+
+def load_model(model_name):
+    payload = {
+        "model": model_name,
+        "prompt": "",
+        "keep_alive": 3600  # Keep model alive for 1 hour
+    }
+    try:
+        response = requests.post(API_URL, json=payload, timeout=120)
+        if response.status_code != 200:
+            print(f"Error loading model {model_name}: {response.status_code}, {response.text}")
+            return False
         else:
-            print(f"Model {model} is already downloaded.")
+            #print(f"Model {model_name} loaded successfully.")
+            return True
+    except Exception as e:
+        print(f"Failed to load model {model_name}: {e}")
+        return False
+
+def unload_model(model_name):
+    payload = {
+        "model": model_name,
+        "prompt": "",
+        "keep_alive": 0  # Unload model immediately
+    }
+    try:
+        response = requests.post(API_URL, json=payload, timeout=120)
+        if response.status_code != 200:
+            print(f"Error unloading model {model_name}: {response.status_code}, {response.text}")
+            return False
+        else:
+            #print(f"Model {model_name} unloaded successfully.")
+            return True
+    except Exception as e:
+        print(f"Failed to unload model {model_name}: {e}")
+        return False
 
 def main():
     models = [
-        "yi-coder:1.5b-chat-q3_K_S",
-        "yi-coder:1.5b-chat-q3_K_M",
-        "yi-coder:1.5b-chat-q3_K_L",
-        "yi-coder:1.5b-chat-q4_0",
-        "yi-coder:1.5b-chat-q4_K_M",
-        "yi-coder:1.5b-chat-q8_0"
+    "qwen2.5:1.5b-instruct-fp16",
+    "qwen2.5:1.5b-instruct-q2_K",
+    "qwen2.5:1.5b-instruct-q3_K_S",
+    "qwen2.5:1.5b-instruct-q3_K_M",
+    "qwen2.5:1.5b-instruct-q3_K_L",
+    "qwen2.5:1.5b-instruct-q4_0",
+    "qwen2.5:1.5b-instruct-q4_1",
+    "qwen2.5:1.5b-instruct-q4_K_S",
+    "qwen2.5:1.5b-instruct-q4_K_M",
+    "qwen2.5:1.5b-instruct-q5_0",
+    "qwen2.5:1.5b-instruct-q5_1",
+    "qwen2.5:1.5b-instruct-q5_K_S",
+    "qwen2.5:1.5b-instruct-q5_K_M",
+    "qwen2.5:1.5b-instruct-q6_K",
+    "qwen2.5:1.5b-instruct-q8_0"
     ]  # Add your models here
 
     # Ensure models are downloaded
@@ -147,11 +204,23 @@ def main():
     ]
 
     for model_name in models:
-        print(f"Running model: {model_name}")
+        print(f"\nLoading model: {model_name}")
+        if not load_model(model_name):
+            print(f"Failed to load model {model_name}. Skipping.")
+            continue
+        # Get memory usage
+        memory_usage, vram_usage = get_model_memory_usage(model_name)
+        print(f"Memory usage for model {model_name}: {format_bytes(memory_usage)}")
+        if vram_usage:
+            print(f"VRAM usage for model {model_name}: {format_bytes(vram_usage)}")
         tokens_per_second_list = []
+        tokens_per_second_list = []
+        ratings_list = []
+        ratings_list = []
+
+        print(f"Testing model: {model_name}")
 
         for prompt in prompts:
-            print(f"Prompt: {prompt}")
             tokens_per_second, model_output = send_prompt(model_name, prompt)
             if tokens_per_second is None:
                 # Assume a timeout or error occurred, skip this model
@@ -160,17 +229,30 @@ def main():
             else:
                 tokens_per_second_list.append(tokens_per_second)
                 # Send the output to ChatGPT for rating
-                rating = rate_local_llm_output_with_chatgpt(model_output, prompt)
-                print(f"Local LLM's Response: {model_output}")
-                print(f"ChatGPT Rating: {rating}")
-                print("-" * 50)
+                rating_text = "0" #rate_local_llm_output_with_chatgpt(model_output, prompt)
+                #print(f"Prompt: {prompt}")
+                #print(f"TPS: {tokens_per_second}")
+                #print(f"RATING: {rating_text}")
+                # Try to extract the numeric rating
+                try:
+                    rating_value = float(rating_text)
+                    ratings_list.append(rating_value)
+                except ValueError:
+                    print(f"Failed to parse rating '{rating_text}' as a number.")
+                    ratings_list.append(0)  # Assign 0 if parsing fails
 
-        if tokens_per_second_list:
+        if tokens_per_second_list and ratings_list:
             avg_tokens_per_second = sum(tokens_per_second_list) / len(tokens_per_second_list)
-            memory_usage = get_model_memory_usage(model_name)
-            memory_in_mb = memory_usage / (1024 * 1024)  # Convert bytes to MB
-            print(f"Model: {model_name}, Average Tokens Per Second: {avg_tokens_per_second:.2f}, Memory Usage: {memory_in_mb:.2f} MB")
+            avg_rating = sum(ratings_list) / len(ratings_list)
+            print(f"Model: {model_name}")
+            print(f"Average Tokens Per Second: {avg_tokens_per_second:.2f}")
+            print(f"Average GPT Rating: {avg_rating:.2f}")
             print("=" * 50)
+        else:
+            print(f"Model {model_name} did not complete successfully.")
+
+        # Unload the model
+        unload_model(model_name)
 
 if __name__ == "__main__":
     main()
