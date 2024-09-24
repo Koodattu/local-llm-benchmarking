@@ -19,6 +19,7 @@ def send_prompt(model_name, prompt):
         "model": model_name,
         "prompt": prompt,
         "stream": False,
+		"options": { "num_predict": 200 }
     }
     try:
         # Set timeout to 120 seconds (2 minutes)
@@ -77,6 +78,8 @@ def format_bytes(size):
     return f"{size:.2f} {power_labels[n]}"
 
 def rate_local_llm_output_with_chatgpt(local_model_output, prompt):
+    if os.getenv('OPENAI_API_KEY') is None:
+	    return 0
     """Ask OpenAI's ChatGPT to rate the local LLM's output."""
     chatgpt_prompt = f"""
 You are a code reviewer. 
@@ -172,23 +175,29 @@ def unload_model(model_name):
         print(f"Failed to unload model {model_name}: {e}")
         return False
 
+# New function to save results to a text file
+def save_results_to_file(file_name, model_name, memory_usage, tokens_per_second, rating):
+    with open(file_name, 'a') as f:  # 'a' mode appends to the file without overwriting
+        f.write(f"{model_name} | {memory_usage} | {tokens_per_second:.2f} | {rating:.2f}\n")
+
+
 def main():
     models = [
-    "qwen2.5:1.5b-instruct-fp16",
-    "qwen2.5:1.5b-instruct-q2_K",
-    "qwen2.5:1.5b-instruct-q3_K_S",
-    "qwen2.5:1.5b-instruct-q3_K_M",
-    "qwen2.5:1.5b-instruct-q3_K_L",
-    "qwen2.5:1.5b-instruct-q4_0",
-    "qwen2.5:1.5b-instruct-q4_1",
-    "qwen2.5:1.5b-instruct-q4_K_S",
-    "qwen2.5:1.5b-instruct-q4_K_M",
-    "qwen2.5:1.5b-instruct-q5_0",
-    "qwen2.5:1.5b-instruct-q5_1",
-    "qwen2.5:1.5b-instruct-q5_K_S",
-    "qwen2.5:1.5b-instruct-q5_K_M",
-    "qwen2.5:1.5b-instruct-q6_K",
-    "qwen2.5:1.5b-instruct-q8_0"
+    "qwen2.5:0.5b-instruct-q2_K",
+    "qwen2.5:0.5b-instruct-q3_K_S",
+    "qwen2.5:0.5b-instruct-q3_K_M",
+    "qwen2.5:0.5b-instruct-q3_K_L",
+    "qwen2.5:0.5b-instruct-q4_0",
+    "qwen2.5:0.5b-instruct-q4_1",
+    "qwen2.5:0.5b-instruct-q4_K_S",
+    "qwen2.5:0.5b-instruct-q4_K_M",
+    "qwen2.5:0.5b-instruct-q5_0",
+    "qwen2.5:0.5b-instruct-q5_1",
+    "qwen2.5:0.5b-instruct-q5_K_S",
+    "qwen2.5:0.5b-instruct-q5_K_M",
+    "qwen2.5:0.5b-instruct-q6_K",
+    "qwen2.5:0.5b-instruct-q8_0",
+    "qwen2.5:0.5b-instruct-fp16"
     ]  # Add your models here
 
     # Ensure models are downloaded
@@ -210,6 +219,7 @@ def main():
             continue
         # Get memory usage
         memory_usage, vram_usage = get_model_memory_usage(model_name)
+        memory_str = format_bytes(memory_usage)
         print(f"Memory usage for model {model_name}: {format_bytes(memory_usage)}")
         if vram_usage:
             print(f"VRAM usage for model {model_name}: {format_bytes(vram_usage)}")
@@ -222,6 +232,7 @@ def main():
 
         for prompt in prompts:
             tokens_per_second, model_output = send_prompt(model_name, prompt)
+            print(f"Prompt: {prompt} \nResponse: {model_output}")
             if tokens_per_second is None:
                 # Assume a timeout or error occurred, skip this model
                 print(f"Skipping model {model_name} due to timeout or error.")
@@ -229,10 +240,10 @@ def main():
             else:
                 tokens_per_second_list.append(tokens_per_second)
                 # Send the output to ChatGPT for rating
-                rating_text = "0" #rate_local_llm_output_with_chatgpt(model_output, prompt)
-                #print(f"Prompt: {prompt}")
-                #print(f"TPS: {tokens_per_second}")
-                #print(f"RATING: {rating_text}")
+                rating_text = rate_local_llm_output_with_chatgpt(model_output, prompt)
+                print(f"Prompt: {prompt}")
+                print(f"TPS: {tokens_per_second}")
+                print(f"RATING: {rating_text}")
                 # Try to extract the numeric rating
                 try:
                     rating_value = float(rating_text)
@@ -248,6 +259,7 @@ def main():
             print(f"Average Tokens Per Second: {avg_tokens_per_second:.2f}")
             print(f"Average GPT Rating: {avg_rating:.2f}")
             print("=" * 50)
+            save_results_to_file("model_test_results.txt", model_name, memory_str, avg_tokens_per_second, avg_rating)
         else:
             print(f"Model {model_name} did not complete successfully.")
 
